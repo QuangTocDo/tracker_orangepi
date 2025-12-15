@@ -1,0 +1,26 @@
+# Models
+*.pt
+*.onnx
+*.engine
+*.rknn
+
+# Data
+data/
+datasets/
+videos/
+*.mp4
+*.avi
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.env
+
+# Logs
+logs/
+runs/
+
+# Virtual environment
+venv/
+venv_310/
