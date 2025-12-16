@@ -62,9 +62,11 @@ def reid_face_worker(task_queue, result_queue, analyzer):
             if not is_image_quality_good(image_crop):
                 task_queue.task_done()
                 continue
+            t0 = time.perf_counter()
             reid_vector = analyzer.extract_reid_feature(image_crop)
             face_vector, face_confidence = analyzer.extract_face_feature(image_crop)
-            result_queue.put((track_id, reid_vector, face_vector, face_confidence))
+            dt = (time.perf_counter() - t0) * 1000
+            result_queue.put((track_id, reid_vector, face_vector, face_confidence,dt))
             task_queue.task_done()
         except Exception as e:
             print(f"Lỗi Worker 1: {e}")
@@ -76,10 +78,12 @@ def attribute_analysis_worker(task_queue, result_queue, analyzer):
     while True:
         try:
             track_id, frame, bbox = task_queue.get(block=True)
+            t0 = time.perf_counter()
             analysis_result = loop.run_until_complete(
                 analyzer.analyze_person_by_bbox(frame, bbox, track_id)
             )
-            result_queue.put((track_id, analysis_result))
+            dt = (time.perf_counter() - t0) * 1000
+            result_queue.put((track_id, analysis_result,dt))
             task_queue.task_done()
         except Exception as e:
             print(f"Lỗi Worker 2: {e}")
@@ -114,6 +118,8 @@ def main():
     
     profiler = Profiler()
     frame_count = 0
+    reid_times = []
+    attr_times = []
     db_manager = None
     yolo_model = None
     frame_provider = None
@@ -203,24 +209,66 @@ def main():
                     clean_bboxes.append(bbox)
 
             track_manager.update_tracks(clean_ids, clean_bboxes, frame, reid_task_queue, attribute_task_queue)
-            track_manager.process_analysis_results(reid_result_queue)
-            track_manager.process_attribute_results(attribute_result_queue)
+            
+#            while not attribute_result_queue.empty():
+#                tid, attr_res, dt = attribute_result_queue.get()
+#                attr_times.append(dt)
+#                track_manager.tracked_objects.get(tid, {}).get(
+#                    'history_attributes', []).append(attr_res)
+            track_manager.process_attribute_results(attribute_result_queue, attr_times)
+
+#            while not reid_result_queue.empty():
+#                tid, reid_vec, face_vec, face_conf, dt = reid_result_queue.get()
+#                reid_times.append(dt)
+#                reid_result_queue.put((tid, reid_vec, face_vec, face_conf))
+            track_manager.process_analysis_results(reid_result_queue, reid_times)
+
             profiler.stop("Logic_Update")
 
             profiler.start("Drawing")
+
+            frame_out = draw_tracked_objects(frame, track_manager.tracked_objects)
+
+            stats_dict, _, _ = profiler.get_stats()
+
+            yolo_ms = stats_dict.get("Inference", 0)
+            yolo_fps = 1000 / (yolo_ms + 1e-5)
+
+            reid_fps = 1000 / (np.mean(reid_times) + 1e-5) if reid_times else 0
+            attr_fps = 1000 / (np.mean(attr_times) + 1e-5) if attr_times else 0
+
+            y, dy = 30, 22
+            cv2.putText(frame_out, f"YOLO FPS: {yolo_fps:.1f}",
+                        (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
+
+            cv2.putText(frame_out, f"ReID FPS: {reid_fps:.1f}",
+                        (10, y + dy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,200,0), 2)
+
+            cv2.putText(frame_out, f"Attr FPS: {attr_fps:.1f}",
+                        (10, y + 2*dy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,200,255), 2)
             frame_out = draw_tracked_objects(frame, track_manager.tracked_objects)
             
-            stats, cpu_p, mem_mb = profiler.get_stats()
-            avg_time = stats.get("Total_Frame", 0)
-            fps_est = 1000 / (avg_time + 1e-5)
-            color_info = (0, 255, 0) # Màu xanh lá cho PyTorch mode
+#            stats_dict, cpu_p, mem_mb = profiler.get_stats()
+#            avg_time = stats_dict.get("Total_Frame", 0)
+#            fps_est = 1000 / (avg_time + 1e-5)
+#            color_info = (0, 255, 0) # Màu xanh lá cho PyTorch mode
             
-            cv2.putText(frame_out, f"FPS: {fps_est:.1f} | CPU: {cpu_p:.0f}%", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_info, 2)
+#            cv2.putText(frame_out, f"FPS: {fps_est:.1f} | CPU: {cpu_p:.0f}%", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_info, 2)
             cv2.imshow("System",frame_out)
             profiler.stop("Drawing")
             
             profiler.stop("Total_Frame")
             profiler.print_report(frame_count)
+
+            if frame_count % 30 == 0:
+                stats_dict, _, _ = profiler.get_stats()
+                yolo_ms = stats_dict.get("Inference", 0)
+                yolo_fps = 1000 / (yolo_ms + 1e-5)
+                reid_fps = 1000 / (np.mean(reid_times) + 1e-5) if reid_times else 0
+                attr_fps = 1000 / (np.mean(attr_times) + 1e-5) if attr_times else 0
+                print(f"[FPS] YOLO={yolo_fps:.2f} | ReID={reid_fps:.2f} | Attr={attr_fps:.2f}")
+                reid_times.clear()
+                attr_times.clear()
  
             if cv2.waitKey(1) & 0xFF == ord('q'): break
 

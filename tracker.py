@@ -302,9 +302,11 @@ class TrackManager:
             if obj_data['status'] in ['identified', 'confirmed']:
                 self._consolidate_attributes(track_id)
 
-    def process_analysis_results(self, result_queue):
+    def process_analysis_results(self, result_queue, reid_times_list=None):
         while not result_queue.empty():
-            track_id, reid_vec, face_vec, face_conf = result_queue.get()
+            track_id, reid_vec, face_vec, face_conf, dt  = result_queue.get()
+            if reid_times_list is not None:
+                reid_times_list.append(dt)
             if track_id not in self.tracked_objects: continue
             obj_data = self.tracked_objects[track_id]
 
@@ -351,9 +353,11 @@ class TrackManager:
                     if current_reid_count < config.MAX_REID_VECTORS_PER_PROFILE:
                         print(f"💎 [Làm giàu RE-ID] ID: {person_id}, Count: {current_reid_count+1}/{config.MAX_REID_VECTORS_PER_PROFILE}")
                         self.db_manager.add_vectors(config.REID_NAMESPACE, person_id, [reid_vec])
-    def process_attribute_results(self, attribute_result_queue):
+    def process_attribute_results(self, attribute_result_queue, attr_times_list=None):
         while not attribute_result_queue.empty():
-            track_id, analysis_result = attribute_result_queue.get()
+            track_id, analysis_result, dt = attribute_result_queue.get()
+            if attr_times_list is not None:
+                attr_times_list.append(dt)
             if track_id in self.tracked_objects and analysis_result:
                 self.tracked_objects[track_id]['history_attributes'].append(analysis_result)
 
