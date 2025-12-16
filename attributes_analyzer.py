@@ -1,134 +1,175 @@
+# attributes_analyzer.py
 import cv2
 import asyncio
 import numpy as np
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from glob import glob
 
-# Import tất cả cấu hình từ file config.py
 import config
-
-# Import các module xử lý
-from utils.logging_python_orangepi import setup_logging, get_logger
+from utils.logging_python_orangepi import get_logger
 from utils.mediapipe_pose import HumanDetection
 from utils.gender_hybrid import GenderClassification
 from utils.pose_color_new1 import PoseColorAnalyzer
 from utils.clothing_classifier_by_color_new import ClothingClassifier
+from utils.cut_body_part import extract_head_from_frame 
 
-# --- Thiết lập logging ---
-# setup_logging() # Bỏ dòng này để tránh xung đột với logging của main_track
+# --- IMPORT MODULE AGE/RACE (CHỈ DÙNG ONNX) ---
+try:
+    from utils.age_race_onnx import AgeRaceEstimatorONNX
+except ImportError:
+    AgeRaceEstimatorONNX = None
+
 logger = get_logger(__name__)
 
 class AttributesAnalyzer:
-    """
-    Lớp chuyên phân tích các thuộc tính của con người như giới tính, quần áo.
-    Đã được tái cấu trúc để có thể import như một module.
-    """
     def __init__(self):
-        """Hàm khởi tạo, chuẩn bị môi trường."""
         self.executor = ThreadPoolExecutor(max_workers=os.cpu_count())
         self.human_detector = None
         self.gender_classifier = None
         self.clothing_classifier = None
         self.pose_color_analyzer = None
+        self.age_race_estimator = None 
         self.models_loaded = False
 
-    def _check_models(self):
-        """Kiểm tra sự tồn tại của các file model cần thiết."""
-        logger.info("Kiểm tra các file model cho phân tích thuộc tính...")
-        missing_files = []
-        # Giả sử config được import đúng cách và có các đường dẫn này
-        required_paths = {
-            "Person Model": config.PERSON_MODEL_PATH,
-            "Pose Model": config.POSE_MODEL_PATH,
-            "Gender Face Model": config.GENDER_FACE_MODEL_PATH,
-            "Gender Pose Model": config.GENDER_POSE_MODEL_PATH,
-            "Skin CSV": config.SKIN_CSV_PATH,
-        }
-        for name, path in required_paths.items():
-            if not os.path.exists(path):
-                missing_files.append((name, path))
-
-        if missing_files:
-            logger.error("="*50)
-            logger.error("LỖI: Một hoặc nhiều file model cho AttributesAnalyzer không được tìm thấy!")
-            for name, path in missing_files:
-                logger.error(f" - {name}: '{path}'")
-            logger.error("="*50)
-            return False
-        logger.info("Tất cả các file model thuộc tính đã được tìm thấy.")
-        return True
-
     async def load_models(self):
-        """Tải các model xử lý một cách bất đồng bộ. Phải được gọi sau khi khởi tạo."""
-        if not self._check_models():
-            raise RuntimeError("Không thể tải models do thiếu file.")
-
-        logger.info("Bắt đầu tải các model phân tích thuộc tính...")
+        print("--- LOADING ATTRIBUTE MODELS (ONNX ONLY) ---")
         loop = asyncio.get_event_loop()
 
+        # 1. Load các model cơ bản (Pose, Gender, Clothing)
         self.human_detector = await loop.run_in_executor(
-            self.executor, lambda: HumanDetection(person_model=config.PERSON_MODEL_PATH, pose_model=config.POSE_MODEL_PATH)
+            self.executor, lambda: HumanDetection(config.PERSON_MODEL_PATH, config.POSE_MODEL_PATH)
         )
         self.gender_classifier = await loop.run_in_executor(
-            self.executor, lambda: GenderClassification(
-                gender_face_model_path=config.GENDER_FACE_MODEL_PATH,
-                gender_pose_model_path=config.GENDER_POSE_MODEL_PATH
-            )
+            self.executor, lambda: GenderClassification(config.GENDER_FACE_MODEL_PATH, config.GENDER_POSE_MODEL_PATH)
         )
         self.clothing_classifier = await loop.run_in_executor(
-            self.executor, lambda: ClothingClassifier(skin_csv_path=config.SKIN_CSV_PATH)
+            self.executor, lambda: ClothingClassifier(config.SKIN_CSV_PATH)
         )
         self.pose_color_analyzer = PoseColorAnalyzer()
+        
+        # 2. Load Age/Race (Chỉ load ONNX)
+        if AgeRaceEstimatorONNX and os.path.exists(config.AGE_RACE_MODEL_ONNX_PATH):
+             print(f"--> Loading ONNX Age/Race: {config.AGE_RACE_MODEL_ONNX_PATH}")
+             self.age_race_estimator = await loop.run_in_executor(
+                 self.executor, lambda: AgeRaceEstimatorONNX(config.AGE_RACE_MODEL_ONNX_PATH)
+             )
+        else:
+            print("❌ KHÔNG LOAD ĐƯỢC MODEL AGE/RACE ONNX! (Kiểm tra lại config.py và file model)")
+
         self.models_loaded = True
-        logger.info("Tải model phân tích thuộc tính hoàn tất.")
+        print("✅ Attribute Models Loaded.")
+
+    def safe_crop(self, image, x1, y1, x2, y2):
+        """
+        Hàm cắt ảnh an toàn: Tự động kẹp tọa độ vào trong khung hình.
+        Sửa lỗi 'Invalid bounding box' khi detect trên Orange Pi.
+        """
+        if image is None or image.size == 0: return None
+        h, w = image.shape[:2]
+        
+        # Kẹp tọa độ (Clamping) - Đảm bảo không bao giờ tràn viền
+        x1 = max(0, min(x1, w))
+        y1 = max(0, min(y1, h))
+        x2 = max(0, min(x2, w))
+        y2 = max(0, min(y2, h))
+        
+        # Kiểm tra tính hợp lệ: Nếu diện tích bằng 0 hoặc âm
+        if x2 <= x1 or y2 <= y1:
+            return None
+            
+        return image[y1:y2, x1:x2]
 
     async def analyze_person_by_bbox(self, frame, bbox, person_id):
-        """
-        Phân tích một người duy nhất dựa trên bounding box và ID được cung cấp.
-        Hàm này sẽ tự thực hiện việc ước tính tư thế và sau đó chạy các phân tích khác.
-        """
-        if not self.models_loaded:
-            logger.error("Models chưa được tải! Vui lòng gọi hàm load_models() trước.")
-            return {'id': person_id, 'status': 'error', 'reason': 'Models not loaded'}
+        if not self.models_loaded: return None
 
-        logger.info(f"[Thuộc tính] Bắt đầu phân tích cho ID: {person_id} tại bbox: {bbox}")
+        # 1. Cắt người từ khung hình (Dùng safe_crop thay vì cắt trực tiếp)
+        bx1, by1, bx2, by2 = map(int, bbox)
+        person_crop = self.safe_crop(frame, bx1, by1, bx2, by2)
         
-        # Bước 1: Lấy keypoint từ bbox
+        if person_crop is None: return None
+
+        # Detect Pose
         keypoints, kpts_z = self.human_detector.detect_pose_from_bbox(frame, bbox)
+        
+        loop = asyncio.get_event_loop()
 
-        if keypoints is None or kpts_z is None:
-            logger.warning(f"[Thuộc tính] Không thể ước tính tư thế cho ID {person_id}. Bỏ qua.")
-            return {'id': person_id, 'status': 'error', 'reason': 'Pose estimation failed'}
+        # ====================================================
+        # CHIẾN THUẬT CẮT MẶT (SỬ DỤNG SAFE CROP)
+        # ====================================================
+        face_img = None
+        method = "None"
 
-        try:
-            x1, y1, x2, y2 = map(int, bbox)
-            person_crop = frame[max(0, y1):y2, max(0, x1):x2]
-            if person_crop.size == 0:
-                return {'id': person_id, 'status': 'error', 'reason': 'Empty crop from bbox'}
+        # CÁCH 1: Keypoints (Ưu tiên)
+        if keypoints is not None:
+            head_bbox = extract_head_from_frame(frame, keypoints, scale=1.2)
+            if head_bbox:
+                hx1, hy1, hx2, hy2 = head_bbox
+                # Tính toán tọa độ ép vuông
+                fw, fh = hx2 - hx1, hy2 - hy1
+                side = max(fw, fh)
+                cx, cy = hx1 + fw//2, hy1 + fh//2
+                
+                new_hx1 = int(cx - side//2)
+                new_hy1 = int(cy - side//2)
+                new_hx2 = int(new_hx1 + side)
+                new_hy2 = int(new_hy1 + side)
+
+                # Cắt an toàn
+                face_img = self.safe_crop(frame, new_hx1, new_hy1, new_hx2, new_hy2)
+                if face_img is not None:
+                    method = "Keypoints"
+
+        # CÁCH 2: Fallback (Cắt 20% đầu người nếu không có Keypoints)
+        if face_img is None:
+            h, w = person_crop.shape[:2]
+            crop_h = int(h * 0.20)
+            if crop_h > 5: 
+                crop_w = min(crop_h, w) # Cố gắng lấy vuông
+                center_x = w // 2
+                start_x = center_x - crop_w // 2
+                
+                # Cắt an toàn từ person_crop
+                face_img = self.safe_crop(person_crop, start_x, 0, start_x + crop_w, crop_h)
+                method = "Fallback_20%"
+        
+        # ====================================================
+
+        # Task Gender
+        img_for_gender = face_img if (face_img is not None) else person_crop
+        gender_task = loop.run_in_executor(
+            self.executor, self.gender_classifier.predict, img_for_gender.copy(), keypoints
+        )
+        
+        # Task Clothing
+        clothing_task = self.pose_color_analyzer.process_and_classify(
+            image=frame, keypoints=keypoints, kpts_z=kpts_z, classifier=self.clothing_classifier
+        )
+
+        # Task Age & Race (Chạy ONNX)
+        async def run_age_race():
+            if self.age_race_estimator is None: return None
+            if face_img is None: return None 
             
-            loop = asyncio.get_event_loop()
-            
-            gender_task = loop.run_in_executor(
-                self.executor, self.gender_classifier.predict, person_crop.copy(), keypoints
-            )
-            clothing_task = self.pose_color_analyzer.process_and_classify(
-                image=frame, keypoints=keypoints, kpts_z=kpts_z, classifier=self.clothing_classifier
-            )
-            
-            gender_result, clothing_result = await asyncio.gather(gender_task, clothing_task)
+            try:
+                res = self.age_race_estimator.predict(face_img)
+                if res:
+                    print(f"🎯 [ID:{person_id}] Age/Race [{method}]: {res}")
+                return res
+            except Exception as e:
+                print(f"❌ [ID:{person_id}] Age Predict Error: {e}")
+                return None
 
-            final_result = {
-                'id': person_id,
-                'status': 'success',
-                'timestamp': time.time(),
-                'gender_analysis': gender_result,
-                'clothing_analysis': clothing_result
-            }
-            logger.info(f"[Thuộc tính] Phân tích hoàn tất cho ID: {person_id}")
-            return final_result
+        age_race_task = run_age_race()
 
-        except Exception as e:
-            logger.error(f"[Thuộc tính] Lỗi không mong muốn khi phân tích ID {person_id}: {e}", exc_info=True)
-            return {'id': person_id, 'status': 'error', 'reason': str(e)}
+        # Chạy song song 3 task
+        gender_res, clothing_res, age_race_res = await asyncio.gather(gender_task, clothing_task, age_race_task)
+
+        return {
+            'id': person_id,
+            'status': 'success',
+            'timestamp': time.time(),
+            'gender_analysis': gender_res,
+            'clothing_analysis': clothing_res,
+            'age_race_analysis': age_race_res
+        }

@@ -1,0 +1,39 @@
+# --- Core Data Science & Math ---
+numpy>=2.1.3
+pandas>=2.3.3
+scipy>=1.16.3
+scikit-learn>=1.7.2
+matplotlib>=3.10.7
+seaborn>=0.13.2
+polars==1.36.1
+
+# --- Computer Vision & Image Processing ---
+# Dùng opencv-contrib để có đầy đủ module, bỏ bản opencv-python để tránh xung đột
+opencv-contrib-python>=4.12.0.88
+pillow>=12.0.0
+dlib  # Lưu ý: Cần cài CMake và C++ compiler trước
+mediapipe>=0.10.14
+
+# --- Deep Learning (PyTorch & TensorFlow) ---
+# Lưu ý: Nên cài PyTorch riêng theo lệnh ở hướng dẫn bên dưới để nhận GPU
+torch
+torchvision
+torchaudio
+tensorflow>=2.19.1
+keras>=3.12.0
+tf_keras>=2.19.0
+tensorboard>=2.19.0
+faiss-cpu
+# --- AI Models & Frameworks (YOLO, Face, etc.) ---
+ultralytics>=8.3.237
+deepface==0.0.96
+retina-face==0.0.17
+torchreid==0.2.5
+
+tqdm>=4.67.1
+pyyaml>=6.0.3
+
+# --- System
+colorama
+typing_extensions
+six

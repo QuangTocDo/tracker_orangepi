@@ -6,9 +6,10 @@ from PIL import Image
 from deepface import DeepFace
 from torchvision import transforms
 import os 
+from typing import Optional, Tuple
 # --- Cấu hình ---
 # Đường dẫn tương đối đến thư mục models
-MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
+MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'models')
 
 # Cấu hình OSNet (Re-ID)
 OSNET_MODEL_PATH = os.path.join(MODELS_DIR, "osnet_ain_x1_0_msmt17_256x128_amsgrad_ep50_lr0_0015_coslr_b64_fb10.pth")
@@ -103,7 +104,7 @@ class Analyzer:
         )
         print(f"✅ Khởi động model DeepFace ({DEEPFACE_MODEL_NAME}) thành công.")
 
-    def extract_reid_feature(self, person_crop: np.ndarray) -> list | None:
+    def extract_reid_feature(self, person_crop: np.ndarray) -> Optional[list]:
         """Trích xuất vector đặc trưng Re-ID từ ảnh crop của một người."""
         if person_crop is None or person_crop.size == 0:
             return None
@@ -120,7 +121,7 @@ class Analyzer:
             print(f"Lỗi khi trích xuất đặc trưng Re-ID: {e}")
             return None
 
-    def extract_face_feature(self, face_crop: np.ndarray) -> tuple[list | None, float]:
+    def extract_face_feature(self, face_crop: np.ndarray) -> Tuple[Optional[list],float]:
         """
         Trích xuất vector đặc trưng khuôn mặt bằng model đã được chọn khi khởi tạo.
         Luôn trả về một tuple (vector, confidence).

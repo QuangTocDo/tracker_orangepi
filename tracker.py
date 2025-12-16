@@ -1,3 +1,4 @@
+# tracker.py
 import numpy as np
 from collections import deque, Counter
 import config
@@ -46,14 +47,11 @@ class TrackManager:
         obj_data = self.tracked_objects[track_id]
         history_deque = obj_data.get('history_attributes', deque(maxlen=100))
 
-        # --- THAY ĐỔI: Lấy mẫu lịch sử dựa trên trạng thái của đối tượng ---
         history = []
         if obj_data['status'] in ['identified', 'confirmed']:
-            # Nếu ID đã ổn định, chỉ vote trên 30 mẫu gần nhất
             history = list(history_deque)[-10:]
             print(f"🗳️  [ID: {track_id}] Re-vote trên {len(history)} mẫu gần nhất...")
         else:
-            # Nếu là lần vote đầu tiên (pending), vote trên toàn bộ lịch sử hiện có
             history = list(history_deque)
             print(f"🗳️  [ID: {track_id}] Bắt đầu vote lần đầu trên {len(history)} kết quả thuộc tính...")
 
@@ -64,66 +62,81 @@ class TrackManager:
         genders, upper_types, lower_types = [], [], []
         upper_colors, lower_colors = [], []
         skin_colors_bgr = []
+        ages, races = [], [] # List cho Age/Race
 
         for result in history:
-            #print(result.get('clothing_analysis', {}))
             if result.get('status') != 'success': continue
             
+            # 1. Thu thập Gender
             if result.get('gender_analysis'):
                 genders.append(result['gender_analysis'].get('gender'))
             
-            clothing_res = result.get('clothing_analysis', {})
+            # 2. Thu thập Clothing (SỬA LỖI Ở ĐÂY)
+            clothing_res = result.get('clothing_analysis')
             
-            classification = clothing_res.get('classification')
-            if classification:
-                upper_types.append(classification.get('sleeve_type'))
-                lower_types.append(classification.get('pants_type'))
+            # --- KIỂM TRA QUAN TRỌNG: Nếu clothing_res là None thì bỏ qua ---
+            if clothing_res: 
+                classification = clothing_res.get('classification')
+                if classification:
+                    upper_types.append(classification.get('sleeve_type'))
+                    lower_types.append(classification.get('pants_type'))
+                    
+                    skin_bgr = classification.get('skin_tone_bgr')
+                    if skin_bgr is not None:
+                        skin_colors_bgr.append(skin_bgr)
 
-            raw_colors = clothing_res.get('raw_color_data')
-            if raw_colors:
-                brachium_colors = raw_colors.get('brachium_colors')
-                if brachium_colors:
-                    upper_colors.extend([c['bgr'] for c in brachium_colors if 'bgr' in c])
+                raw_colors = clothing_res.get('raw_color_data')
+                if raw_colors:
+                    brachium_colors = raw_colors.get('brachium_colors')
+                    if brachium_colors:
+                        upper_colors.extend([c['bgr'] for c in brachium_colors if 'bgr' in c])
 
-                thigh_colors = raw_colors.get('thigh_colors')
-                if thigh_colors:
-                    lower_colors.extend([c['bgr'] for c in thigh_colors if 'bgr' in c])
+                    thigh_colors = raw_colors.get('thigh_colors')
+                    if thigh_colors:
+                        lower_colors.extend([c['bgr'] for c in thigh_colors if 'bgr' in c])
 
-            skin_bgr = classification.get('skin_tone_bgr')
-            #print(skin_bgr)
-            if skin_bgr is not None:
-                skin_colors_bgr.append(skin_bgr)
+            # 3. Thu thập Age & Race (MỚI)
+            age_race_res = result.get('age_race_analysis')
+            if age_race_res:
+                ages.append(age_race_res.get('age'))
+                races.append(age_race_res.get('race'))
 
+        # --- TỔNG HỢP KẾT QUẢ ---
         final_attributes = {}
+
         if genders:
-            valid_genders = [g for g in genders if g]
-            if valid_genders:
-                final_attributes['gender'] = Counter(valid_genders).most_common(1)[0][0]
+            valid = [g for g in genders if g]
+            if valid: final_attributes['gender'] = Counter(valid).most_common(1)[0][0]
         
+        # Vote Age
+        if ages:
+            valid = [a for a in ages if a]
+            if valid: final_attributes['age'] = Counter(valid).most_common(1)[0][0]
+
+        # Vote Race
+        if races:
+            valid = [r for r in races if r]
+            if valid: final_attributes['race'] = Counter(valid).most_common(1)[0][0]
+
         if upper_types:
-            valid_upper_types = [t for t in upper_types if t]
-            if valid_upper_types:
-                final_attributes['upper_type'] = Counter(valid_upper_types).most_common(1)[0][0]
+            valid = [t for t in upper_types if t]
+            if valid: final_attributes['upper_type'] = Counter(valid).most_common(1)[0][0]
 
         if lower_types:
-            valid_lower_types = [t for t in lower_types if t]
-            if valid_lower_types:
-                final_attributes['lower_type'] = Counter(valid_lower_types).most_common(1)[0][0]
+            valid = [t for t in lower_types if t]
+            if valid: final_attributes['lower_type'] = Counter(valid).most_common(1)[0][0]
 
-        dominant_upper_bgr = self._find_dominant_color(upper_colors)
-        if dominant_upper_bgr:
-            final_attributes['upper_color'] = dominant_upper_bgr[::-1]
+        dom_upper = self._find_dominant_color(upper_colors)
+        if dom_upper: final_attributes['upper_color'] = dom_upper[::-1]
 
-        dominant_lower_bgr = self._find_dominant_color(lower_colors)
-        if dominant_lower_bgr:
-            final_attributes['lower_color'] = dominant_lower_bgr[::-1]
+        dom_lower = self._find_dominant_color(lower_colors)
+        if dom_lower: final_attributes['lower_color'] = dom_lower[::-1]
 
-        dominant_skin_bgr = self._find_dominant_color(skin_colors_bgr,k =1)
-        if dominant_skin_bgr:
-            final_attributes['skin_tone_bgr'] = dominant_skin_bgr
+        dom_skin = self._find_dominant_color(skin_colors_bgr, k=1)
+        if dom_skin: final_attributes['skin_tone_bgr'] = dom_skin
+
         obj_data['final_attributes'] = final_attributes
         print(f"✅ [ID: {track_id}] Đã cập nhật thuộc tính cuối cùng: {final_attributes}")
-
     def _get_query_vector(self, vectors_deque):
         if not vectors_deque: return None
         return np.mean(np.array(list(vectors_deque)), axis=0).tolist()

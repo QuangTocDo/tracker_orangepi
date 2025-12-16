@@ -1,0 +1,5 @@
+docker run -it --rm \
+  --ipc=host \
+  --network host \
+  -v ~/Documents/nquang/models:/models \
+  tracking_reid_py311

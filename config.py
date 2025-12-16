@@ -1,5 +1,9 @@
+# config.py
 import cv2
 import os
+
+SHM_NAME = "video_shm"
+SHM_FRAME_SHAPE = (480, 640, 3)
 
 #======================================================================================
 
@@ -35,6 +39,10 @@ GENDER_FACE_MODEL_PATH = os.path.join(MODEL_DIR, "GDF_038_93.pt")
 
 GENDER_POSE_MODEL_PATH = os.path.join(MODEL_DIR, "GDP_038_91.pt")
 RKNN_MODEL_PATH = os.path.join(BASE_DIR, "yolo11n_rknn_model/models/yolo11n-rk3588.rknn")
+
+AGE_RACE_MODEL_RKNN_PATH = os.path.join(MODEL_DIR, "best_model_detectFaceAgeAndRace_RK3588.rknn")
+AGE_RACE_MODEL_ONNX_PATH = os.path.join(MODEL_DIR, "best_model_detectFaceAgeAndRace.onnx")
+YUNET_MODEL_PATH = os.path.join(MODEL_DIR, "face_detection_yunet_2023mar.onnx")
 #Model RKNN
 #PERSON_MODEL_PATH = os.path.join(BASE_DIR, "yolo11n_rknn_model/models/yolo11n-rk3588.rknn")
 
@@ -135,3 +143,4 @@ FONT_THICKNESS = 2
 TEMP_ID_COLOR = (0, 0, 255)             # Đỏ - Trạng thái 'pending'
 TENTATIVE_ID_COLOR = (0, 165, 255)      # Cam - Trạng thái 'tentative' <<< MỚI >>>
 CONFIRMED_ID_COLOR = (0, 255, 0)        # Xanh lá - Trạng thái 'confirmed' hoặc 'identified'
+ 

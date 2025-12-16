@@ -1,42 +1,53 @@
-# ===== Base image ARM64 =====
-FROM ubuntu:22.04
+# =========================
+# Base image
+# =========================
+FROM python:3.11-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# ===== System dependencies =====
+# =========================
+# TOOLCHAIN cho dlib (BẮT BUỘC)
+# =========================
 RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    python3-dev \
-    python3-opencv \
-    libgl1 \
-    libglib2.0-0 \
-    v4l-utils \
-    ffmpeg \
+    build-essential \
+    cmake \
     git \
-    wget \
+    libboost-all-dev \
+    libopenblas-dev \
+    liblapack-dev \
+    libx11-dev \
+    libgtk-3-dev \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libgl1 \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# ===== Upgrade pip =====
-RUN python3 -m pip install --upgrade pip
-
-# ===== Install RKNN Toolkit (ARM) =====
-# ⚠️ Phải dùng bản tương thích RK3588
-RUN pip install rknn-toolkit2==1.5.0
-
-# ===== Install Python deps =====
-COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
-
-# ===== Workdir =====
+# =========================
+# Workdir
+# =========================
 WORKDIR /app
 
-# ===== Copy source =====
-COPY . /app
+# =========================
+# Python deps
+# =========================
+COPY requirement.txt .
 
-# ===== OpenCV camera =====
-ENV DISPLAY=:0
+# ⚠️ ép build dlib không dùng GPU, không AVX
+ENV CMAKE_ARGS="-DDLIB_USE_CUDA=0 -DDLIB_USE_AVX_INSTRUCTIONS=0"
+ENV FORCE_CMAKE=1
 
-# ===== Run =====
-CMD ["python3", "main_.py"]
+RUN pip install --upgrade pip \
+    && pip install --no-cache-dir -r requirement.txt
+
+# =========================
+# Copy source
+# =========================
+COPY . .
+
+CMD ["python", "main_.py"]
+
