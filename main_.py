@@ -5,7 +5,9 @@ import threading
 import asyncio
 import sys
 import os
-import numpy 
+import numpy as np
+import time
+from multiprocessing import shared_memory 
 
 # --- CẤU HÌNH ĐƯỜNG DẪN ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -82,6 +84,27 @@ def attribute_analysis_worker(task_queue, result_queue, analyzer):
         except Exception as e:
             print(f"Lỗi Worker 2: {e}")
 
+class SharedMemoryFrameProvider:
+    def __init__(self, name="video_shm", shape=(480, 640, 3)):
+        self.shape = shape
+        try:
+            self.shm = shared_memory.SharedMemory(name=name)
+            self.frame = np.ndarray(shape, dtype=np.uint8, buffer=self.shm.buf)
+        except FileNotFoundError:
+            raise RuntimeError("Shared Memory chưa tồn tại")
+
+    def read(self):
+        return True, self.frame.copy()
+
+    def isOpened(self):
+        return True
+
+    def release(self):
+        try:
+            self.shm.close()
+        except:
+            pass
+
 # ===================================================================
 # ==========                 HÀM MAIN                      ==========
 # ===================================================================
@@ -93,7 +116,7 @@ def main():
     frame_count = 0
     db_manager = None
     yolo_model = None
-    cap = None
+    frame_provider = None
 
     try:
         # Khởi tạo Database và Analyzer
@@ -125,13 +148,17 @@ def main():
         print("✅ YOLO PyTorch OK.")
 
         # Mở Camera
-        cam_source = getattr(config, 'CAMERA_ID', 0) 
-        print(f"--> Mở Camera ID: {cam_source}")
-        cap = cv2.VideoCapture(cam_source)
+        print("--> Đang kết nối Shared Memory...")
+        shm_name = getattr(config, 'SHM_NAME', 'video_shm')
+        shm_shape = getattr(config, 'SHM_FRAME_SHAPE', (480, 640, 3))
         
-        if not cap.isOpened():
-            print(f"❌ Không thể mở Camera {cam_source}")
-            return
+        while True:
+            try:
+                frame_provider = SharedMemoryFrameProvider(name=shm_name, shape=shm_shape)
+                break
+            except RuntimeError as e:
+                print(f"⏳ {e} - Thử lại sau 1s...")
+                time.sleep(1)
 
         print("\n🚀 HỆ THỐNG ĐÃ SẴN SÀNG. PRESS 'Q' TO EXIT.")
 
@@ -139,9 +166,9 @@ def main():
             frame_count += 1
             profiler.start("Total_Frame")
             
-            profiler.start("Read_Cam")
-            ret, frame = cap.read()
-            profiler.stop("Read_Cam")
+            profiler.start("Read_Frame")
+            ret, frame = frame_provider.read()
+            profiler.stop("Read_Frame")
             if not ret: break
 
             # [PYTORCH FLOW]
@@ -189,12 +216,12 @@ def main():
             color_info = (0, 255, 0) # Màu xanh lá cho PyTorch mode
             
             cv2.putText(frame_out, f"FPS: {fps_est:.1f} | CPU: {cpu_p:.0f}%", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_info, 2)
-            cv2.imshow("System", frame_out)
+            cv2.imshow("System",frame_out)
             profiler.stop("Drawing")
             
             profiler.stop("Total_Frame")
             profiler.print_report(frame_count)
-
+ 
             if cv2.waitKey(1) & 0xFF == ord('q'): break
 
     except Exception as e:
@@ -202,7 +229,7 @@ def main():
         print(f"❌ LỖI: {e}")
         traceback.print_exc()
     finally:
-        if cap: cap.release()
+        if frame_provider: frame_provider.release()
         if db_manager: db_manager.save_all_databases()
         cv2.destroyAllWindows()
         print("--- END ---")

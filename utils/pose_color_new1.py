@@ -166,6 +166,7 @@ class PoseColorAnalyzer:
             self.start_time = current_time
             self.frame_count = 0
 
+
     async def process_and_classify(
         self, 
         image: np.ndarray, 
@@ -175,12 +176,19 @@ class PoseColorAnalyzer:
         external_data: Optional[Dict] = None
     ) -> Optional[Dict[str, Any]]:
         """
-        Pipeline xử lý chính ĐÃ ĐƯỢC TÁI CẤU TRÚC.
+        Pipeline xử lý phân tích màu quần áo (Đã vá lỗi NoneType).
         """
+        # --- BƯỚC QUAN TRỌNG: VÁ LỖI CRASH ---
+        # Kiểm tra ảnh đầu vào
+        if image is None or image.size == 0:
+            return None
+        if keypoints is None:
+            return None 
         if external_data is None: external_data = {}
+        
         try:
-            # BƯỚC 1: Xác định các vùng cơ thể quan trọng bằng các hàm tiện ích tĩnh
-            logger.debug("Bắt đầu xác định vùng cơ thể tốt nhất...")
+            # BƯỚC 1: Xác định các vùng cơ thể
+            # Vì đã kiểm tra keypoints is None ở trên, các hàm dưới này sẽ chạy an toàn
             torso_box = HumanDetection.get_torso_box(keypoints)
             _arm_side, arm_coords = HumanDetection.select_best_arm(keypoints, kpts_z)
             _leg_side, leg_coords = HumanDetection.select_best_leg(keypoints, kpts_z)
@@ -188,14 +196,15 @@ class PoseColorAnalyzer:
             # BƯỚC 2: Chuẩn bị các tác vụ (task) để chạy bất đồng bộ
             tasks = {}
 
-            # Tác vụ cho Thân (Torso)
+            # --- Tác vụ cho Thân (Torso) ---
             if torso_box:
                 x1, y1, x2, y2 = torso_box
-                if y2 > y1 and x2 > x1: # Đảm bảo crop không bị rỗng
+                # Kiểm tra tọa độ hợp lệ
+                if y2 > y1 and x2 > x1: 
                     torso_pixels = self._get_pixels_from_polygon(image, [(x1,y1), (x2,y1), (x2,y2), (x1,y2)])
                     tasks['torso'] = asyncio.to_thread(self.analyze_colors_advanced, torso_pixels)
 
-            # Tác vụ cho Cánh tay (Arm) tốt nhất
+            # --- Tác vụ cho Cánh tay (Arm) ---
             if arm_coords:
                 p_shoulder = tuple(map(int, (arm_coords['shoulder']['x'], arm_coords['shoulder']['y'])))
                 p_elbow = tuple(map(int, (arm_coords['elbow']['x'], arm_coords['elbow']['y'])))
@@ -203,7 +212,7 @@ class PoseColorAnalyzer:
                 tasks['brachium'] = asyncio.to_thread(self._analyze_limb_segment, image, p_shoulder, p_elbow, False)
                 tasks['forearm'] = asyncio.to_thread(self._analyze_limb_segment, image, p_elbow, p_wrist, True)
 
-            # Tác vụ cho Chân (Leg) tốt nhất
+            # --- Tác vụ cho Chân (Leg) ---
             if leg_coords:
                 p_hip = tuple(map(int, (leg_coords['hip']['x'], leg_coords['hip']['y'])))
                 p_knee = tuple(map(int, (leg_coords['knee']['x'], leg_coords['knee']['y'])))
@@ -211,15 +220,15 @@ class PoseColorAnalyzer:
                 tasks['thigh'] = asyncio.to_thread(self._analyze_limb_segment, image, p_hip, p_knee, False)
                 tasks['shin'] = asyncio.to_thread(self._analyze_limb_segment, image, p_knee, p_ankle, False)
 
-            # BƯỚC 3: Thực thi đồng thời các tác vụ và thu thập kết quả
+            # BƯỚC 3: Thực thi đồng thời các tác vụ
             task_keys = list(tasks.keys())
-            if not task_keys: # Nếu không có tác vụ nào, trả về sớm
+            if not task_keys: 
                 return None
             
             task_values = list(tasks.values())
             results = await asyncio.gather(*task_values, return_exceptions=True)
 
-            # BƯỚC 4: Tạo từ điển regional_analysis từ kết quả
+            # BƯỚC 4: Tổng hợp kết quả màu sắc
             regional_analysis = {
                 "torso_colors": None, "brachium_colors": None, "forearm_colors": None,
                 "thigh_colors": None, "shin_colors": None
@@ -229,13 +238,13 @@ class PoseColorAnalyzer:
                 if not isinstance(result, Exception):
                     regional_analysis[f"{key}_colors"] = result
 
-            # BƯỚC 5: Gọi classifier chỉ với dữ liệu màu đã xử lý
+            # BƯỚC 5: Gọi classifier để phân loại loại áo/màu sắc
             data_for_classifier = {**external_data, "regional_analysis": regional_analysis}
             classification_result = await asyncio.to_thread(classifier.classify, data_for_classifier)
 
             self._update_fps()
 
-            # Trả về kết quả cuối cùng với cấu trúc chuẩn
+            # Trả về kết quả cuối cùng
             return {
                 "classification": classification_result, 
                 "raw_color_data": regional_analysis,
@@ -245,8 +254,9 @@ class PoseColorAnalyzer:
                     "best_leg_side": _leg_side
                 }
             }
+
         except Exception as e:
-            logger.error(f"Lỗi trong pipeline phân tích màu tái cấu trúc: {e}", exc_info=True)
+            logger.error(f"Lỗi pipeline phân tích màu: {e}", exc_info=True)
             return None
 
 def create_analyzer(line_thickness: int = 30, k_clusters: int = 3) -> PoseColorAnalyzer:
